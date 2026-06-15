@@ -515,10 +515,22 @@ if ($("btnUseDb")) {
 
       if (!id) throw new Error("Pilih database dulu");
 
-      const res = await postJson("/api/open-db", { id, alias }, false);
+      const res = await postJson("/api/open-db", { id, alias }, true);
 
       await fetchAoStatus();
-      showNotify("success", "Database aktif", renderSimpleMessage([`Database siap digunakan: ${alias || id}`]));
+      const lic = res.license || {};
+      const quotaText = lic.max_databases
+        ? `Kuota database: ${lic.used_databases || 0}/${lic.max_databases}`
+        : "";
+      const registeredText = lic.database_registered_now
+        ? "Database ini berhasil didaftarkan ke lisensi."
+        : "Database ini sudah terdaftar di lisensi.";
+
+      showNotify("success", "Database aktif", renderSimpleMessage([
+        `Database siap digunakan: ${alias || id}`,
+        registeredText,
+        quotaText
+      ].filter(Boolean)));
     } catch (e) {
       showNotify("error", "Database gagal digunakan", renderSimpleMessage([e.message]));
     }

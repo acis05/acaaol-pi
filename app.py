@@ -118,10 +118,66 @@ def load_licenses():
                 "active": True,
                 "expires": None,
                 "customer_name": "Demo User",
+                "max_databases": 5,
+                "allowed_databases": [],
             }
         ]
     with open(LICENSE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def save_licenses(data):
+    with open(LICENSE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def get_current_user_email():
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+
+    token = auth[7:]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        return str(payload.get("email") or "").strip().lower() or None
+    except Exception:
+        return None
+
+
+def get_license_by_email(email: str):
+    email = str(email or "").strip().lower()
+    licenses = load_licenses()
+    for lic in licenses:
+        if str(lic.get("email", "")).strip().lower() == email:
+            return licenses, lic
+    return licenses, None
+
+
+def normalize_allowed_databases(lic: dict):
+    allowed = lic.setdefault("allowed_databases", [])
+    normalized = []
+
+    for item in allowed:
+        if isinstance(item, dict):
+            db_id = str(item.get("id") or "").strip()
+            alias = str(item.get("alias") or "").strip()
+        else:
+            db_id = str(item or "").strip()
+            alias = ""
+
+        if db_id and not any(str(x.get("id")) == db_id for x in normalized):
+            normalized.append({"id": db_id, "alias": alias})
+
+    lic["allowed_databases"] = normalized
+    return normalized
+
+
+def get_max_databases(lic: dict) -> int:
+    try:
+        max_db = int(lic.get("max_databases", 5))
+    except Exception:
+        max_db = 5
+    return max(max_db, 0)
 
 
 def license_valid(email: str, password: str):
@@ -658,11 +714,18 @@ def api_login():
 
     token = make_token(email)
 
+    allowed_databases = normalize_allowed_databases(lic)
+    max_databases = get_max_databases(lic)
+
     return jsonify({
         "ok": True,
         "token": token,
         "customer_name": lic.get("customer_name"),
-        "email": email
+        "email": email,
+        "expires": lic.get("expires"),
+        "max_databases": max_databases,
+        "used_databases": len(allowed_databases),
+        "allowed_databases": allowed_databases
     })
 
 
@@ -959,10 +1022,22 @@ def api_db_list():
 
 
 @app.post("/api/open-db")
+@require_auth
 def api_open_db():
     body = request.get_json(silent=True) or {}
     db_id = str(body.get("id") or "").strip()
     db_alias = str(body.get("alias") or "").strip()
+
+    user_email = get_current_user_email()
+    if not user_email:
+        return jsonify({"ok": False, "message": "Session login tidak valid."}), 401
+
+    licenses, lic = get_license_by_email(user_email)
+    if not lic:
+        return jsonify({"ok": False, "message": "Lisensi user tidak ditemukan."}), 401
+
+    allowed_databases = normalize_allowed_databases(lic)
+    max_databases = get_max_databases(lic)
 
     tokens = refresh_access_token_if_needed()
     access_token = (tokens.get("access_token") or "").strip()
@@ -970,6 +1045,31 @@ def api_open_db():
         return jsonify({"ok": False, "message": "Belum connect OAuth."}), 401
     if not db_id:
         return jsonify({"ok": False, "message": "db id kosong."}), 400
+
+    already_registered = any(
+        str(x.get("id") or "").strip() == db_id
+        for x in allowed_databases
+    )
+
+    if not already_registered and len(allowed_databases) >= max_databases:
+        registered_names = [
+            (x.get("alias") or x.get("id") or "-")
+            for x in allowed_databases
+        ]
+        return jsonify({
+            "ok": False,
+            "message": (
+                f"Kuota database penuh. Lisensi ini maksimal {max_databases} database. "
+                "Hubungi ACIS untuk upgrade lisensi."
+            ),
+            "license": {
+                "customer_name": lic.get("customer_name"),
+                "max_databases": max_databases,
+                "used_databases": len(allowed_databases),
+                "allowed_databases": allowed_databases,
+                "registered_names": registered_names,
+            }
+        }), 403
 
     headers = {"Authorization": f"Bearer {access_token}"}
     r = requests.get(ACCOUNT_OPEN_DB_URL, headers=headers, params={"id": db_id}, timeout=60)
@@ -982,10 +1082,12 @@ def api_open_db():
     if not r.ok:
         return jsonify({"ok": False, "message": "open-db gagal", "status": r.status_code, "response": j}), r.status_code
 
+    final_alias = db_alias or tokens.get("db_alias") or f"DB {db_id}"
+
     tokens.update(
         {
             "db_id": db_id,
-            "db_alias": db_alias or tokens.get("db_alias"),
+            "db_alias": final_alias,
             "host": j.get("host"),
             "x_session_id": j.get("session"),
             "updated_at": dt.datetime.now().isoformat(),
@@ -993,8 +1095,29 @@ def api_open_db():
     )
     save_tokens(tokens)
 
-    return jsonify({"ok": True, "response": j})
+    database_registered_now = False
+    if not already_registered:
+        allowed_databases.append({
+            "id": db_id,
+            "alias": final_alias,
+            "registered_at": dt.datetime.now().isoformat(timespec="seconds"),
+        })
+        lic["allowed_databases"] = allowed_databases
+        save_licenses(licenses)
+        database_registered_now = True
 
+    return jsonify({
+        "ok": True,
+        "response": j,
+        "license": {
+            "customer_name": lic.get("customer_name"),
+            "max_databases": max_databases,
+            "used_databases": len(allowed_databases),
+            "remaining_databases": max(max_databases - len(allowed_databases), 0),
+            "allowed_databases": allowed_databases,
+            "database_registered_now": database_registered_now,
+        }
+    })
 
 # =========================
 # Template download
