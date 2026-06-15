@@ -10,6 +10,65 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="/static/styles.css">
+
+  <style>
+    .license-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 22px;
+      padding: 24px 28px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.20), rgba(251, 146, 60, 0.08));
+      border: 1px solid rgba(245, 158, 11, 0.26);
+      box-shadow: var(--shadow);
+    }
+    .license-kicker {
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .license-card h2 {
+      margin: 0;
+      font-size: clamp(22px, 2vw, 32px);
+      line-height: 1.18;
+      letter-spacing: -0.04em;
+    }
+    .license-card p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .license-quota {
+      min-width: 150px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(0, 0, 0, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      text-align: center;
+    }
+    html[data-theme="clear"] .license-quota {
+      background: rgba(255, 255, 255, 0.58);
+    }
+    .license-quota span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+    .license-quota strong {
+      font-size: 28px;
+      color: var(--accent);
+    }
+    @media (max-width: 760px) {
+      .license-card { flex-direction: column; align-items: stretch; }
+      .license-quota { width: 100%; }
+    }
+  </style>
 </head>
 <body>
   <div class="app-shell">
@@ -97,6 +156,20 @@
             <p>Ikuti 3 langkah: koneksi Accurate, upload Excel, lalu impor faktur pembelian.</p>
           </div>
           <div class="module-badge">Module: Purchase Invoice</div>
+        </section>
+
+
+
+        <section id="licenseCard" class="license-card span2">
+          <div>
+            <div class="license-kicker">Lisensi ACA-AOL</div>
+            <h2 id="licenseOwner">APLIKASI ACA-AOL INI TERDAFTAR ATAS NAMA -</h2>
+            <p id="licenseMeta">Masa berlaku dan kuota database akan tampil setelah login.</p>
+          </div>
+          <div class="license-quota">
+            <span>Kuota Database</span>
+            <strong id="licenseQuota">0/5</strong>
+          </div>
         </section>
 
         <section class="card">

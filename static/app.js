@@ -8,6 +8,14 @@ let ao = {
   db_alias: null
 };
 
+let licenseInfo = {
+  customer_name: sessionStorage.getItem("license_customer_name") || "",
+  email: sessionStorage.getItem("license_email") || "",
+  expires: sessionStorage.getItem("license_expires") || "",
+  max_databases: Number(sessionStorage.getItem("license_max_databases") || 5),
+  used_databases: Number(sessionStorage.getItem("license_used_databases") || 0)
+};
+
 const $ = (id) => document.getElementById(id);
 
 // ======================
@@ -32,6 +40,58 @@ function setText(id, value = "") {
 
 function setSummary(text) {
   setText("summary", text || "");
+}
+
+function saveLicenseInfo(data = {}) {
+  const lic = data.license || data || {};
+
+  licenseInfo = {
+    customer_name: lic.customer_name || data.customer_name || licenseInfo.customer_name || "-",
+    email: data.email || licenseInfo.email || "",
+    expires: lic.expires || data.expires || licenseInfo.expires || "",
+    max_databases: Number(lic.max_databases || data.max_databases || licenseInfo.max_databases || 5),
+    used_databases: Number(lic.used_databases ?? data.used_databases ?? licenseInfo.used_databases ?? 0)
+  };
+
+  sessionStorage.setItem("license_customer_name", licenseInfo.customer_name || "");
+  sessionStorage.setItem("license_email", licenseInfo.email || "");
+  sessionStorage.setItem("license_expires", licenseInfo.expires || "");
+  sessionStorage.setItem("license_max_databases", String(licenseInfo.max_databases || 5));
+  sessionStorage.setItem("license_used_databases", String(licenseInfo.used_databases || 0));
+
+  renderLicenseInfo();
+}
+
+function clearLicenseInfo() {
+  licenseInfo = {
+    customer_name: "",
+    email: "",
+    expires: "",
+    max_databases: 5,
+    used_databases: 0
+  };
+
+  [
+    "license_customer_name",
+    "license_email",
+    "license_expires",
+    "license_max_databases",
+    "license_used_databases"
+  ].forEach((key) => sessionStorage.removeItem(key));
+
+  renderLicenseInfo();
+}
+
+function renderLicenseInfo() {
+  const customer = licenseInfo.customer_name || "-";
+  const maxDb = Number(licenseInfo.max_databases || 5);
+  const usedDb = Number(licenseInfo.used_databases || 0);
+  const expires = licenseInfo.expires || "-";
+  const email = licenseInfo.email || "-";
+
+  setText("licenseOwner", `APLIKASI ACA-AOL INI TERDAFTAR ATAS NAMA ${customer}`);
+  setText("licenseQuota", `${usedDb}/${maxDb}`);
+  setText("licenseMeta", `Email login: ${email} · Masa berlaku: ${expires} · Maksimal ${maxDb} database Accurate`);
 }
 
 function escapeHtml(text) {
@@ -191,6 +251,7 @@ function updateViewByLogin() {
 
 function updateUI() {
   updateViewByLogin();
+  renderLicenseInfo();
 
   const loggedIn = isLoggedIn();
   const fileReady = isFileReady();
@@ -372,9 +433,10 @@ if ($("btnLogin")) {
       const res = await postJson("/api/login", { email, password }, false);
       token = res.token;
       sessionStorage.setItem("app_token", token);
+      saveLicenseInfo(res);
 
       if ($("customerInfo")) {
-        $("customerInfo").textContent = "Customer: " + (res.customer_name || "-") + (res.email ? " · " + res.email : "");
+        $("customerInfo").textContent = `Terdaftar atas nama: ${res.customer_name || "-"}`;
       }
 
       setText("loginStatus", "Login berhasil");
@@ -410,6 +472,7 @@ if ($("btnAppLogout")) {
   $("btnAppLogout").onclick = () => {
     token = null;
     sessionStorage.removeItem("app_token");
+    clearLicenseInfo();
     resetExcelState();
     clearNotify();
     clearLog();
