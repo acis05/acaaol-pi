@@ -6,7 +6,7 @@
     "expires": "2026-12-31",
     "customer_name": "Demo User",
     "notes": "Akses demo PI - login email password",
-    "max_databases": 7,
+    "max_databases": 5,
     "allowed_databases": []
   },
   {
