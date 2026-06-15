@@ -23,6 +23,8 @@ LICENSE_FILE = os.path.join(APP_DIR, "licenses.json")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev_jwt_change_me")
 SECRET_KEY = os.getenv("SECRET_KEY", "dev_change_me")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@aca-aol.id").strip().lower()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
 AO_PI_SAVE_PATH = os.getenv("AO_PI_SAVE_PATH", "/api/purchase-invoice/bulk-save.do")
 
@@ -233,6 +235,59 @@ def require_auth(fn):
 
     return wrapper
 
+
+
+
+# =========================
+# Admin helpers
+# =========================
+def make_admin_token(email: str) -> str:
+    payload = {
+        "email": email,
+        "role": "admin",
+        "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=8),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+def require_admin(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return jsonify({"ok": False, "message": "Unauthorized admin"}), 401
+        token = auth[7:]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            if payload.get("role") != "admin":
+                return jsonify({"ok": False, "message": "Invalid admin session"}), 401
+        except Exception:
+            return jsonify({"ok": False, "message": "Invalid admin session"}), 401
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def admin_license_view(lic: dict) -> dict:
+    allowed = normalize_allowed_databases(lic)
+    max_db = get_max_databases(lic)
+    return {
+        "email": str(lic.get("email", "")).strip().lower(),
+        "customer_name": lic.get("customer_name") or "-",
+        "active": bool(lic.get("active")),
+        "expires": lic.get("expires") or "",
+        "notes": lic.get("notes") or "",
+        "max_databases": max_db,
+        "used_databases": len(allowed),
+        "allowed_databases": allowed,
+    }
+
+
+def find_license_index(licenses, email):
+    email = str(email or "").strip().lower()
+    for i, lic in enumerate(licenses):
+        if str(lic.get("email", "")).strip().lower() == email:
+            return i
+    return -1
 
 # =========================
 # OAuth helpers
@@ -735,6 +790,20 @@ def api_login():
 @app.get("/api/ao-status")
 def api_ao_status():
     tokens = load_tokens()
+    license_info = None
+    email = get_current_user_email()
+    if email:
+        _, lic = get_license_by_email(email)
+        if lic:
+            allowed_databases = normalize_allowed_databases(lic)
+            license_info = {
+                "customer_name": lic.get("customer_name"),
+                "email": email,
+                "expires": lic.get("expires"),
+                "max_databases": get_max_databases(lic),
+                "used_databases": len(allowed_databases),
+                "allowed_databases": allowed_databases,
+            }
     return jsonify(
         {
             "ok": True,
@@ -742,6 +811,7 @@ def api_ao_status():
             "has_session": bool((tokens.get("host") or "").strip()) and bool((tokens.get("x_session_id") or "").strip()),
             "db_id": tokens.get("db_id"),
             "db_alias": tokens.get("db_alias"),
+            "license": license_info,
         }
     )
 
@@ -1118,6 +1188,157 @@ def api_open_db():
             "database_registered_now": database_registered_now,
         }
     })
+
+
+
+# =========================
+# Routes: Admin License Panel
+# =========================
+@app.get("/admin")
+def admin_page():
+    return render_template("admin.html")
+
+
+@app.post("/api/admin/login")
+def api_admin_login():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "").strip()
+
+    if email != ADMIN_EMAIL or password != ADMIN_PASSWORD:
+        return jsonify({"ok": False, "message": "Email/password admin salah"}), 401
+
+    return jsonify({"ok": True, "token": make_admin_token(email), "email": email})
+
+
+@app.get("/api/admin/licenses")
+@require_admin
+def api_admin_list_licenses():
+    licenses = load_licenses()
+    changed = False
+    for lic in licenses:
+        before = json.dumps(lic, sort_keys=True, ensure_ascii=False)
+        normalize_allowed_databases(lic)
+        if "max_databases" not in lic or lic.get("max_databases") in (None, ""):
+            lic["max_databases"] = 5
+        after = json.dumps(lic, sort_keys=True, ensure_ascii=False)
+        changed = changed or before != after
+    if changed:
+        save_licenses(licenses)
+    return jsonify({"ok": True, "data": [admin_license_view(x) for x in licenses]})
+
+
+@app.post("/api/admin/licenses")
+@require_admin
+def api_admin_create_license():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "").strip()
+    customer_name = str(data.get("customer_name") or "").strip()
+    expires = str(data.get("expires") or "").strip()
+    notes = str(data.get("notes") or "").strip()
+    active = bool(data.get("active", True))
+
+    try:
+        max_databases = int(data.get("max_databases") or 5)
+    except Exception:
+        max_databases = 5
+
+    if not email:
+        return jsonify({"ok": False, "message": "Email wajib diisi"}), 400
+    if not password:
+        return jsonify({"ok": False, "message": "Password wajib diisi"}), 400
+    if not customer_name:
+        return jsonify({"ok": False, "message": "Nama PT/customer wajib diisi"}), 400
+    if expires:
+        try:
+            dt.datetime.fromisoformat(expires + "T00:00:00")
+        except Exception:
+            return jsonify({"ok": False, "message": "Format expired harus YYYY-MM-DD"}), 400
+
+    licenses = load_licenses()
+    if find_license_index(licenses, email) >= 0:
+        return jsonify({"ok": False, "message": "Email sudah terdaftar"}), 400
+
+    lic = {
+        "email": email,
+        "password_sha256": sha256(password),
+        "active": active,
+        "expires": expires or None,
+        "customer_name": customer_name,
+        "notes": notes,
+        "max_databases": max_databases,
+        "allowed_databases": [],
+    }
+    licenses.append(lic)
+    save_licenses(licenses)
+    return jsonify({"ok": True, "message": "Customer berhasil dibuat", "license": admin_license_view(lic)})
+
+
+@app.put("/api/admin/licenses/<path:email>")
+@require_admin
+def api_admin_update_license(email):
+    target_email = str(email or "").strip().lower()
+    data = request.get_json(silent=True) or {}
+    licenses = load_licenses()
+    idx = find_license_index(licenses, target_email)
+    if idx < 0:
+        return jsonify({"ok": False, "message": "Customer tidak ditemukan"}), 404
+
+    lic = licenses[idx]
+    if "customer_name" in data:
+        lic["customer_name"] = str(data.get("customer_name") or "").strip() or lic.get("customer_name")
+    if "expires" in data:
+        expires = str(data.get("expires") or "").strip()
+        if expires:
+            try:
+                dt.datetime.fromisoformat(expires + "T00:00:00")
+            except Exception:
+                return jsonify({"ok": False, "message": "Format expired harus YYYY-MM-DD"}), 400
+            lic["expires"] = expires
+        else:
+            lic["expires"] = None
+    if "notes" in data:
+        lic["notes"] = str(data.get("notes") or "").strip()
+    if "active" in data:
+        lic["active"] = bool(data.get("active"))
+    if "max_databases" in data:
+        try:
+            lic["max_databases"] = int(data.get("max_databases") or 5)
+        except Exception:
+            lic["max_databases"] = 5
+    if str(data.get("password") or "").strip():
+        lic["password_sha256"] = sha256(str(data.get("password")).strip())
+
+    normalize_allowed_databases(lic)
+    save_licenses(licenses)
+    return jsonify({"ok": True, "message": "Customer berhasil diupdate", "license": admin_license_view(lic)})
+
+
+@app.post("/api/admin/licenses/<path:email>/reset-databases")
+@require_admin
+def api_admin_reset_databases(email):
+    target_email = str(email or "").strip().lower()
+    licenses = load_licenses()
+    idx = find_license_index(licenses, target_email)
+    if idx < 0:
+        return jsonify({"ok": False, "message": "Customer tidak ditemukan"}), 404
+    licenses[idx]["allowed_databases"] = []
+    save_licenses(licenses)
+    return jsonify({"ok": True, "message": "Database terdaftar berhasil direset", "license": admin_license_view(licenses[idx])})
+
+
+@app.post("/api/admin/licenses/<path:email>/toggle-active")
+@require_admin
+def api_admin_toggle_active(email):
+    target_email = str(email or "").strip().lower()
+    licenses = load_licenses()
+    idx = find_license_index(licenses, target_email)
+    if idx < 0:
+        return jsonify({"ok": False, "message": "Customer tidak ditemukan"}), 404
+    licenses[idx]["active"] = not bool(licenses[idx].get("active"))
+    save_licenses(licenses)
+    return jsonify({"ok": True, "message": "Status customer berhasil diubah", "license": admin_license_view(licenses[idx])})
 
 # =========================
 # Template download
